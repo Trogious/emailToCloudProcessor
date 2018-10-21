@@ -1,12 +1,14 @@
+import boto3
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
 import requests
 import sys
 from email.parser import FeedParser
-from threading import Thread
+from threading import Thread, Lock
 
 ENCODING = 'utf8'
 DECODE = False
@@ -17,6 +19,10 @@ DATE_FORMATS = ['%a, %d %b %Y %X %z', '%a, %d %b %Y %X %z (%Z)', '%d %b %Y %X %z
 DEFAULT_FOLDER = 'Inbox'
 API_KEY = os.getenv('API_KEY')
 API_ENDPOINT = os.getenv('API_ENDPOINT')
+BUCKET_NAME = os.getenv('BUCKET_NAME')
+ACCESS_KEY = os.getenv('ACCESS_KEY')
+SECRET_KEY = os.getenv('SECRET_KEY')
+STDERR_LOCK = Lock()
 
 
 class MsgParser:
@@ -51,25 +57,12 @@ class MsgParser:
         self.id = self._get_id()
         self.id_hash = self._get_id_hash()
 
-    def get_body(self):
-        body = None
-        if self.msg.is_multipart():
-            for part in self.msg.walk():
-                if part.is_multipart():
-                    for subpart in part.walk():
-                        if subpart.get_TEXT_CONTENT() == TEXT_CONTENT:
-                            body = subpart.get_payload(decode=DECODE)
-                elif part.get_TEXT_CONTENT() == TEXT_CONTENT:
-                    body = part.get_payload(decode=DECODE)
-        elif self.msg.get_TEXT_CONTENT() == TEXT_CONTENT:
-            body = self.msg.get_payload(decode=DECODE)
-        return body
-
     def get_parts(self):
         parts = []
         if self.msg.is_multipart():
             for part in self.msg.walk():
-                parts.append(part)
+                if 'multipart/' not in part.get_content_type():
+                    parts.append(part)
         else:
             parts.append(self.msg)
         return parts
@@ -123,15 +116,16 @@ class MsgParser:
 
 
 class PartUploader(Thread):
-    def __init__(self, part, part_no, prefix):
+    def __init__(self, s3, part, part_no, prefix):
         super().__init__()
+        self.s3 = s3
         self.part = part
         self.no = part_no
         self.prefix = prefix
 
     def get_object_name(self):
         if self.part.get_content_type() == TEXT_CONTENT:
-            return 'part _' + str(self.no) + '.txt'
+            return 'part_' + str(self.no) + '.txt'
         elif self.part.get_content_type() == HTML_CONTENT:
             return 'part_' + str(self.no) + '.html'
         else:
@@ -141,18 +135,17 @@ class PartUploader(Thread):
             else:
                 return 'part_' + str(self.no) + '.unknown'
 
+    def upload_part(self, s3, data, object_name):
+        with io.BytesIO(data.encode(ENCODING)) as body_file:
+            s3.upload_fileobj(body_file, BUCKET_NAME, object_name)
+
     def run(self):
-        endpoint = API_ENDPOINT + '/' + self.prefix + '/' + self.get_object_name()
-        print(endpoint)
-        data = {
-            'object_name': self.get_object_name(),
-            'payload': self.part.get_payload(decode=DECODE)
-        }
-        resp = requests.post(endpoint, data=json.dumps(data), headers={'x-api-key': API_KEY})
-        if resp.status_code == 200:
-            pass
-        print(resp.status_code)
-        print(resp.text)
+        try:
+            self.upload_part(self.s3, self.part.get_payload(decode=DECODE), self.prefix + '/' + self.get_object_name())
+        except Exception as e:
+            with STDERR_LOCK:
+                sys.stderr.write(str(e))
+                sys.stderr.flush()
 
 
 def upload_email(mp):
@@ -167,10 +160,11 @@ def upload_email(mp):
     }
     resp = requests.post(API_ENDPOINT, data=json.dumps(data), headers={'x-api-key': API_KEY})
     if resp.status_code == 200:
+        s3 = boto3.client('s3', aws_access_key_id=ACCESS_KEY, aws_secret_access_key=SECRET_KEY)
         part_no = 0
         uploaders = []
         for part in mp.get_parts():
-            uploader = PartUploader(part, part_no, mp.folder + '/' + mp.id_hash)
+            uploader = PartUploader(s3, part, part_no, mp.folder + '/' + mp.id_hash)
             uploaders.append(uploader)
             uploader.start()
             part_no += 1
@@ -185,8 +179,9 @@ def main():
         mp = MsgParser(sys.stdin)
         mp.parse()
         upload_email(mp)
-    except Exception:
-        raise
+    except Exception as e:
+        sys.stderr.write(str(e))
+        sys.stderr.flush()
 
 
 if __name__ == '__main__':
