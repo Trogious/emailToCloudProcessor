@@ -11,7 +11,7 @@ from email.parser import FeedParser
 from threading import Thread, Lock
 
 ENCODING = 'utf8'
-DECODE = False
+DECODE = True
 TEXT_CONTENT = 'text/plain'
 HTML_CONTENT = 'text/html'
 RE_FROM = re.compile('<[^>]+>$')
@@ -136,7 +136,7 @@ class PartUploader(Thread):
                 return 'part_' + str(self.no) + '.unknown'
 
     def upload_part(self, s3, data, object_name):
-        with io.BytesIO(data.encode(ENCODING)) as body_file:
+        with io.BytesIO(data) as body_file:
             s3.upload_fileobj(body_file, BUCKET_NAME, object_name)
 
     def run(self):
