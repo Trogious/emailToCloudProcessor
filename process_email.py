@@ -1,3 +1,4 @@
+import base64
 import boto3
 import datetime
 import hashlib
@@ -5,6 +6,7 @@ import io
 import json
 import os
 import re
+import quopri
 import requests
 import sys
 from email.parser import FeedParser
@@ -15,6 +17,7 @@ DECODE = True
 TEXT_CONTENT = 'text/plain'
 HTML_CONTENT = 'text/html'
 RE_FROM = re.compile('<[^>]+>$')
+RE_BQ = re.compile('^=\?[^?]+\?[bq]\?[^?]+\?=', re.I)
 DATE_FORMATS = ['%a, %d %b %Y %X %z', '%a, %d %b %Y %X %z (%Z)', '%d %b %Y %X %z', '%d %b %Y %X %z (%Z)']
 DEFAULT_FOLDER = 'Inbox'
 API_KEY = os.getenv('API_KEY')
@@ -57,6 +60,28 @@ class MsgParser:
         self.id = self._get_id()
         self.id_hash = self._get_id_hash()
 
+    def decode_bq(self, txt):
+        decoded = txt
+        m = RE_BQ.match(txt)
+        if m is not None:
+            question_m = 0
+            pos = txt.find('?')
+            while pos > 0 and question_m < 2:
+                question_m += 1
+                pos = txt.find('?', pos+1)
+            if pos > 0:
+                charset = txt[2:pos-3]
+                encoding = txt[pos-1].lower()
+                encoded_text = txt[pos+1:-2]
+                try:
+                    if encoding == 'b':
+                        decoded = base64.b64decode(encoded_text).decode(charset)
+                    elif encoding == 'q':
+                        decoded = quopri.decodestring(encoded_text).decode(charset)
+                except Exception as e:
+                    print(e)
+        return decoded
+
     def get_parts(self):
         parts = []
         if self.msg.is_multipart():
@@ -95,7 +120,7 @@ class MsgParser:
         return to_email
 
     def _get_subject(self):
-        return self.msg['subject']
+        return self.decode_bq(self.msg['subject'])
 
     def _parse_date(self, date_in):
         for fmt in DATE_FORMATS:
