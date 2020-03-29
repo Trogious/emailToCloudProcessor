@@ -1,16 +1,17 @@
 import base64
-import boto3
 import datetime
 import hashlib
 import io
 import json
 import os
-import re
 import quopri
-import requests
+import re
 import sys
 from email.parser import FeedParser
-from threading import Thread, Lock
+from threading import Lock, Thread
+
+import boto3
+import requests
 
 ENCODING = 'utf8'
 DECODE = True
@@ -106,7 +107,7 @@ class MsgParser:
         from_email = self._get_from()
         m = RE_FROM.search(from_email)
         if m is not None:
-            from_email = from_email[:m.start()].replace('"', '').strip()
+            from_email = self.decode_bq(from_email[:m.start()].replace('"', '').strip())
         return from_email
 
     def _get_to(self):
